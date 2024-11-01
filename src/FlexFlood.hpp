@@ -1,21 +1,128 @@
 #pragma once
-#include <bits/stdc++.h>
-#include "RandomForestRegression.hpp"
+#include <vector>
+#include "./RandomNumberGenerator.hpp"
 #include "./cpp-btree/btree_set.h"
-struct RealRandomNumberGenerator {
-    std::mt19937_64 mt;
-    RealRandomNumberGenerator()
-        : mt(std::chrono::steady_clock::now().time_since_epoch().count()) {}
-    inline double operator()(const double l, const double r) {
-        std::uniform_real_distribution<double> dist(l, r);
-        return dist(mt);
-    }
-} rrng;
 template <typename Type, int dimension>
 struct FlexFlood {
     using T = std::array<Type, dimension>;
     using U = std::array<int, dimension>;
     using Iter = typename std::vector<T>::iterator;
+    FlexFlood(const Iter& begin, const Iter& end, const std::vector<T>& sample_lowers, const std::vector<T>& sample_uppers, const int num_sampling = 30 * dimension, const double learning_time = 60.0 * dimension)
+        : data(0), num_data(end - begin), divideSize(), divideSizeSigma(0), grid(dimension), count_data(dimension) {
+        assert(sample_lowers.size() == sample_uppers.size());
+        assert(learning_time >= 0.0);
+        learn(begin, end, sample_lowers, sample_uppers, num_sampling, learning_time);
+    }
+    FlexFlood(const Iter& begin, const Iter& end, const U& partitioning)
+        : data(0), num_data(end - begin), divideSize(partitioning), divideSizeSigma(1), grid(dimension), count_data(dimension) {
+        int sort_dimension = -1;
+        for(int d = 0; d < dimension; ++d) {
+            if(partitioning[d] == 1) {
+                sort_dimension = d;
+            }
+        }
+        assert(sort_dimension != -1);
+        init(begin, end, divideSize, sort_dimension);
+    }
+    inline void clear() {
+        num_data = 0;
+        for(int i = 0; i < divideSizeSigma; ++i) {
+            delete data[i];
+        }
+        data.resize(0);
+        divideSize = {};
+        divideSize_ini = {};
+        divideSizeSigma = 0;
+        for(int i = 0; i < dimension; ++i) grid[i].clear();
+        for(int i = 0; i < dimension; ++i) count_data[i].clear();
+        sortDimension = -1;
+    }
+    inline size_t size() {
+        return num_data;
+    }
+    std::vector<T> enumerate(const T& lower, const T& upper) {
+        std::vector<T> res;
+        std::vector<int> idx = projection(lower, upper);
+        for(const int i : idx) {
+            std::pair<typename btree::btree_set<std::pair<double, T>>::iterator, typename btree::btree_set<std::pair<double, T>>::iterator> seg = refinement(lower, upper, i);
+            for(auto iter = seg.first; iter != seg.second; ++iter) {
+                scan(lower, upper, iter, res);
+            }
+        }
+        return res;
+    }
+    void insert(const T& dat, const std::pair<int, int>& lower = std::make_pair(3, 1), const std::pair<int, int>& upper = std::make_pair(1, 2)) {
+        const std::pair<int, int> middle = {lower.first * upper.first, lower.second * upper.first + upper.second * lower.first};
+        std::vector<int> idx(dimension);
+        int index = 0, sigma = 1;
+        for(int i = dimension - 1; i >= 0; --i) {
+            if(i == sortDimension) continue;
+            idx[i] = upper_bound(grid[i].begin(), grid[i].end(), dat[i]) - grid[i].begin() - 1;
+            index += idx[i] * sigma;
+            sigma *= divideSize[i];
+        }
+        int prev_size = data[index]->size();
+        data[index]->insert(make_pair(dat[sortDimension], dat));
+        if(prev_size == data[index]->size()) return;
+        ++num_data;
+        for(int i = 0; i < dimension; ++i) {
+            ++count_data[i][idx[i]];
+            if(lower.first * count_data[i][idx[i]] * divideSize_ini[i] <= lower.second * num_data) {
+                if(idx[i] == 0) {
+                    if(middle.first * count_data[i][idx[i] + 1] * divideSize_ini[i] <= middle.second * num_data) {
+                        merge(i, idx[i]);
+                    } else {
+                        equalize(i, idx[i]);
+                    }
+                } else {
+                    if(middle.first * count_data[i][idx[i] - 1] * divideSize_ini[i] <= middle.second * num_data) {
+                        merge(i, idx[i] - 1);
+                    } else {
+                        equalize(i, idx[i] - 1);
+                    }
+                }
+            } else if(upper.first * count_data[i][idx[i]] * divideSize_ini[i] >= upper.second * num_data) {
+                split(i, idx[i]);
+            }
+        }
+    }
+    void erase(const T& dat, const std::pair<int, int>& lower = std::make_pair(3, 1), const std::pair<int, int>& upper = std::make_pair(1, 2)) {
+        const std::pair<int, int> middle = {lower.first * upper.first, lower.second * upper.first + upper.second * lower.first};
+        std::vector<int> idx(dimension);
+        int index = 0, sigma = 1;
+        for(int i = dimension - 1; i >= 0; --i) {
+            if(i == sortDimension) continue;
+            idx[i] = upper_bound(grid[i].begin(), grid[i].end(), dat[i]) - grid[i].begin() - 1;
+            index += idx[i] * sigma;
+            sigma *= divideSize[i];
+        }
+        int prev_size = data[index]->size();
+        data[index]->erase(make_pair(dat[sortDimension], dat));
+        if(prev_size == data[index]->size()) return;
+        --num_data;
+        for(int i = 0; i < dimension; ++i) {
+            --count_data[i][idx[i]];
+            if(lower.first * count_data[i][idx[i]] * divideSize_ini[i] <= lower.second * num_data) {
+                if(idx[i] == 0) {
+                    if(middle.first * count_data[i][idx[i] + 1] * divideSize_ini[i] <= middle.second * num_data) {
+                        merge(i, idx[i]);
+                    } else {
+                        equalize(i, idx[i]);
+                    }
+                } else {
+                    if(middle.first * count_data[i][idx[i] - 1] * divideSize_ini[i] <= middle.second * num_data) {
+                        merge(i, idx[i] - 1);
+                    } else {
+                        equalize(i, idx[i] - 1);
+                    }
+                }
+            } else if(upper.first * count_data[i][idx[i]] * divideSize_ini[i] >= upper.second * num_data) {
+                split(i, idx[i]);
+            }
+        }
+    }
+
+   private:
     static constexpr double eps = 1e-9;
     std::vector<btree::btree_set<std::pair<double, T>>*> data;
     int num_data;
@@ -24,110 +131,87 @@ struct FlexFlood {
     std::vector<std::vector<double>> grid;
     std::vector<std::vector<int>> count_data;
     int sortDimension;
-    FlexFlood(const Iter& begin, const Iter& end, const std::vector<std::vector<T>>& sample_queries)
-        : data(0), num_data(end - begin), divideSize(), divideSizeSigma(0), grid(dimension), count_data(dimension) {
-        learn(begin, end, sample_queries);
-    }
-    FlexFlood(const Iter& begin, const Iter& end, const U& divide, const int& sort_dim)
-        : data(0), num_data(end - begin), divideSize(divide), divideSizeSigma(0), grid(dimension), count_data(dimension) {
-        assert(divide[sort_dim] == 1);
-        init(begin, end, divideSize, sort_dim);
-    }
-    inline void clear() {
-        for(int i = 0; i < divideSizeSigma; ++i) {
-            delete data[i];
-        }
-        data.resize(0);
-        divideSize = {};
-        divideSizeSigma = 0;
-        for(int i = 0; i < dimension; ++i) grid[i].clear();
-        for(int i = 0; i < dimension; ++i) count_data[i].clear();
-    }
-    void learn(const Iter& begin, const Iter& end, const std::vector<std::vector<T>>& sample_queries) {
-        const int num_query = sample_queries.size();
-        std::vector<std::vector<FeatureType>> divides;
-        std::vector<AnswerType> weights_p, weights_r, weights_s;
+    void learn(const Iter& begin, const Iter& end, const std::vector<T>& sample_lower, const std::vector<T>& sample_upper, const double learning_time, const int num_sampling) {
+        const std::filesystem::path file_path = __FILE__;
+        const std::string path = file_path.parent_path().string();
+        const std::string sample_path = path + "/../train/sample.csv";
+        const std::string train_path = path + "/../train/train.csv";
+        const std::string command = "python3 " + path + "/learning.py " + std::to_string(learning_time) + ' ' + sample_path + " > " + train_path;
+        std::ofstream sampleFile(sample_path);
+        std::ifstream trainFile(train_path);
         for(int sortdim = 0; sortdim < dimension; ++sortdim) {
-            for(int i = 0; i < 31; ++i) {
-                std::vector<FeatureType> divide(dimension, 0);
-                U divsize = {};
+            for(int i = 0; i < num_sampling / dimension + int(sortdim < (num_sampling % dimension)); ++i) {
+                std::array<int, dimension> sample_partitioning;
                 for(int d = 0; d < dimension; ++d) {
-                    if(d == sortdim) divsize[d] = 1;
-                    else divsize[d] = rng.random(2, 100);
-                    divide[d] = divsize[d];
+                    sample_partitioning[d] = rng(2, 100);
                 }
-                if(i > 0) divides.push_back(divide);
-                init(begin, end, divsize, sortdim);
-                std::tuple<AnswerType, AnswerType, AnswerType> weights = measure_time(num_query, sample_queries);
-                if(i > 0) weights_p.push_back(std::get<0>(weights));
-                if(i > 0) weights_r.push_back(std::get<1>(weights));
-                if(i > 0) weights_s.push_back(std::get<2>(weights));
+                sample_partitioning[sortdim] = 1;
+                init(begin, end, sample_partitioning, sortdim);
+                const std::tuple<int, int, int> sample_time = measure_time(sample_lower, sample_upper, sampleFile);
+                for(int d = 0; d < dimension; ++d) {
+                    sampleFile << sample_partitioning[d] << ' ';
+                }
+                sampleFile << std::get<0>(sample_time) << ' ' << std::get<1>(sample_time) << ' ' << std::get<2>(sample_time) << '\n';
                 clear();
             }
         }
-        const int treesNo = 100, minNodeSize = 1, maxLevel = 50, numRandomFeatures = 3, numRandomPositions = 15;
-        RandomForestRegression* rf_p = new RandomForestRegression(treesNo, minNodeSize, maxLevel, numRandomFeatures, numRandomPositions);
-        RandomForestRegression* rf_r = new RandomForestRegression(treesNo, minNodeSize, maxLevel, numRandomFeatures, numRandomPositions);
-        RandomForestRegression* rf_s = new RandomForestRegression(treesNo, minNodeSize, maxLevel, numRandomFeatures, numRandomPositions);
-        rf_p->train(divides, weights_p);
-        rf_r->train(divides, weights_r);
-        rf_s->train(divides, weights_s);
-        std::vector<FeatureType> best_divide(dimension);
-        AnswerType min_weight = std::numeric_limits<AnswerType>::max();
-        for(int sortdim = 0; sortdim < dimension; ++sortdim) {
-            const int num_start = 5;
-            for(int _ = 0; _ < num_start; ++_) {
-                std::vector<FeatureType> divide(dimension, 0);
-                for(int d = 0; d < dimension; ++d) {
-                    divide[d] = rng.random(2, 100);
-                }
-                divide[sortdim] = 1;
-                AnswerType weight = climing(divide, rf_p, rf_r, rf_s);
-                if(weight < min_weight) {
-                    min_weight = weight;
-                    best_divide = divide;
-                }
-            }
+        sampleFile.close();
+        std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+        if(!pipe) {
+            throw std::runtime_error("popen() failed!");
         }
+        std::array<int, dimension> partitioning;
+        int sort_dim = -1;
         for(int d = 0; d < dimension; ++d) {
-            if(best_divide[d] == 1) sortDimension = d;
-            divideSize[d] = best_divide[d];
-        }
-        init(begin, end, divideSize, sortDimension);
-        delete rf_p;
-        delete rf_r;
-        delete rf_s;
-    }
-    inline AnswerType calc_weight(const std::vector<FeatureType>& divide, RandomForestRegression*& rf_p, RandomForestRegression*& rf_r, RandomForestRegression*& rf_s) {
-        const AnswerType w_p = rf_p->estimateRegression(divide);
-        const AnswerType w_r = rf_r->estimateRegression(divide);
-        const AnswerType w_s = rf_s->estimateRegression(divide);
-        return w_p + w_r + w_s;
-    }
-    inline AnswerType climing(std::vector<FeatureType>& divide, RandomForestRegression*& rf_p, RandomForestRegression*& rf_r, RandomForestRegression*& rf_s) {
-        const double start_temp = 100000, end_temp = 10;
-        const int TimeLimit = 2 * CLOCKS_PER_SEC;
-        const int start_time = clock();
-        AnswerType best_weight = calc_weight(divide, rf_p, rf_r, rf_s);
-        int cnt = 0;
-        while((int)clock() - start_time < TimeLimit) {
-            cnt++;
-            std::vector<FeatureType> cand_divide = divide;
-            for(int d = 0; d < dimension; ++d) {
-                if(cand_divide[d] == 1) continue;
-                cand_divide[d] = std::clamp(cand_divide[d] + rng.random(-3, 4), 2, 100);
-            }
-            AnswerType cand_weight = calc_weight(cand_divide, rf_p, rf_r, rf_s);
-            const double temp = start_temp + (end_temp - start_temp) * ((int)clock() - start_time) / TimeLimit;
-            const double prob = exp((best_weight - cand_weight) / temp);
-            if(prob > rrng(0.0, 1.0)) {
-                best_weight = cand_weight;
-                divide = cand_divide;
+            trainFile >> partitioning[d];
+            if(partitioning[d] == 1) {
+                sort_dim = d;
             }
         }
-        return best_weight;
+        trainFile.close();
+        init(begin, end, partitioning, sort_dim);
+    }
+    std::tuple<int, int, int> measure_time(const std::vector<T>& lowers, const std::vector<T>& uppers, std::ofstream& sampleFile) {
+        const int num_query = (int)lowers.size();
+        int w_p = 0, w_r = 0, w_s = 0;
+        int sum = 0;
+        std::chrono::system_clock::time_point start, end;
+        std::chrono::nanoseconds time;
+        std::chrono::_V2::steady_clock::rep msec;
+        for(int q = 0; q < num_query; ++q) {
+            std::vector<T> res;
+            start = std::chrono::system_clock::now();
+            std::vector<int> idx = projection(lowers[q], uppers[q]);
+            end = std::chrono::system_clock::now();
+            time = end - start;
+            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
+            w_p += msec;
+            std::vector<std::pair<typename btree::btree_set<std::pair<double, T>>::iterator, typename btree::btree_set<std::pair<double, T>>::iterator>> seg(idx.size());
+            start = std::chrono::system_clock::now();
+            for(int i = 0; i < (int)idx.size(); ++i) {
+                seg[i] = refinement(lowers[q], uppers[q], idx[i]);
+            }
+            end = std::chrono::system_clock::now();
+            time = end - start;
+            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
+            w_r += msec;
+            start = std::chrono::system_clock::now();
+            for(int i = 0; i < (int)seg.size(); ++i) {
+                for(auto iter = seg[i].first; iter != seg[i].second; ++iter) {
+                    scan(lowers[q], uppers[q], iter, res);
+                }
+            }
+            end = std::chrono::system_clock::now();
+            time = end - start;
+            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
+            w_s += msec;
+            sum += res.size();
+        }
+        sampleFile << sum << '\n';
+        return std::make_tuple(w_p, w_r, w_s);
     }
     void init(const Iter& begin, const Iter& end, const U& divsize, const int sortdim) {
+        num_data = int(end - begin);
         sortDimension = sortdim;
         divideSizeSigma = 1;
         for(int i = 0; i < dimension; ++i) {
@@ -151,7 +235,6 @@ struct FlexFlood {
             std::sort(vec.begin(), vec.end());
             grid[i][0] = -1e100;
             for(int j = 1; j < divsize[i]; ++j) {
-                assert(0 <= num_data * j / divsize[i] - 1 and num_data * j / divsize[i] - 1 < num_data);
                 grid[i][j] = vec[num_data * j / divsize[i] - 1] + eps;
             }
             grid[i][divsize[i]] = 1e100;
@@ -165,13 +248,11 @@ struct FlexFlood {
                     continue;
                 }
                 remDim /= divsize[i];
-                int idx = upper_bound(grid[i].begin(), grid[i].end(), (*iter)[i]) - grid[i].begin();  // *iterがi次元目でどこのグリッドに入る？
+                int idx = upper_bound(grid[i].begin(), grid[i].end(), (*iter)[i]) - grid[i].begin();
                 --idx;
-                assert(0 <= idx and idx < divsize[i]);
                 index += idx * remDim;
                 ++count_data[i][idx];
             }
-            assert(0 <= index and index < divideSizeSigma);
             data[index]->insert(std::make_pair((*iter)[sortDimension], *iter));
         }
     }
@@ -206,133 +287,23 @@ struct FlexFlood {
         auto l = data[i]->lower_bound(make_pair(lower[sortDimension] - eps, T{})), r = data[i]->lower_bound(make_pair(upper[sortDimension] + eps, T{}));
         return make_pair(l, r);
     }
-    inline void scan_enumerate(const T& lower, const T& upper, const typename btree::btree_set<std::pair<double, T>>::const_iterator& iter, std::vector<T>& res) {
-        bool flag = true;
+    inline void scan(const T& lower, const T& upper, const typename btree::btree_set<std::pair<double, T>>::const_iterator& iter, std::vector<T>& res) {
         for(int j = 0; j < dimension; ++j) {
             if(!(lower[j] <= (*iter).second[j] and (*iter).second[j] <= upper[j])) {
-                flag = false;
-                break;
+                return;
             }
         }
-        if(flag) {
-            res.push_back((*iter).second);
-        }
-    }
-    inline void scan_count(const T& lower, const T& upper, const typename btree::btree_set<std::pair<double, T>>::const_iterator& iter, int& res) {
-        bool flag = true;
-        for(int j = 0; j < dimension; ++j) {
-            if(!(lower[j] <= (*iter).second[j] and (*iter).second[j] <= upper[j])) {
-                flag = false;
-                break;
-            }
-        }
-        if(flag) {
-            ++res;
-        }
-    }
-    std::vector<T> enumerate(const T& lower, const T& upper) {
-        std::vector<T> res;
-        std::vector<int> idx = projection(lower, upper);
-        for(const int i : idx) {
-            std::pair<typename btree::btree_set<std::pair<double, T>>::iterator, typename btree::btree_set<std::pair<double, T>>::iterator> seg = refinement(lower, upper, i);
-            for(auto iter = seg.first; iter != seg.second; ++iter) {
-                scan_enumerate(lower, upper, iter, res);
-            }
-        }
-        return res;
-    }
-    int count(const T& lower, const T& upper) {
-        int res = 0;
-        std::vector<int> idx = projection(lower, upper);
-        for(const int i : idx) {
-            std::pair<typename btree::btree_set<std::pair<double, T>>::iterator, typename btree::btree_set<std::pair<double, T>>::iterator> seg = refinement(lower, upper, i);
-            for(auto iter = seg.first; iter != seg.second; ++iter) {
-                scan_count(lower, upper, iter, res);
-            }
-        }
-        return res;
-    }
-    void insert(const T& dat, const std::pair<int, int>& lower = std::make_pair(3, 1), const std::pair<int, int>& upper = std::make_pair(1, 2)) {
-        const std::pair<int, int> middle = {lower.first * upper.first, lower.second * upper.first + upper.second * lower.first};
-        std::vector<int> idx(dimension);
-        int index = 0, sigma = 1;
-        for(int i = dimension - 1; i >= 0; --i) {
-            if(i == sortDimension) continue;
-            idx[i] = upper_bound(grid[i].begin(), grid[i].end(), dat[i]) - grid[i].begin() - 1;
-            assert(0 <= idx[i] and idx[i] < divideSize[i]);
-            index += idx[i] * sigma;
-            sigma *= divideSize[i];
-        }
-        assert(0 <= index and index < divideSizeSigma);
-        data[index]->insert(make_pair(dat[sortDimension], dat));
-        ++num_data;
-        for(int i = 0; i < dimension; ++i) {
-            ++count_data[i][idx[i]];
-            if(lower.first * count_data[i][idx[i]] * divideSize_ini[i] <= lower.second * num_data) {
-                if(idx[i] == 0) {
-                    if(middle.first * count_data[i][idx[i] + 1] * divideSize_ini[i] <= middle.second * num_data) {
-                        merge(i, idx[i]);
-                    } else {
-                        flatten(i, idx[i]);
-                    }
-                } else {
-                    if(middle.first * count_data[i][idx[i] - 1] * divideSize_ini[i] <= middle.second * num_data) {
-                        merge(i, idx[i] - 1);
-                    } else {
-                        flatten(i, idx[i] - 1);
-                    }
-                }
-            } else if(upper.first * count_data[i][idx[i]] * divideSize_ini[i] >= upper.second * num_data) {
-                split(i, idx[i]);
-            }
-        }
+        res.push_back((*iter).second);
     }
     void insert_only(const T& dat) {
         int index = 0, sigma = 1;
         for(int i = dimension - 1; i >= 0; --i) {
             if(i == sortDimension) continue;
             int idx = upper_bound(grid[i].begin(), grid[i].end(), dat[i]) - grid[i].begin() - 1;
-            assert(0 <= idx and idx < divideSize[i]);
             index += idx * sigma;
             sigma *= divideSize[i];
         }
-        assert(0 <= index and index < divideSizeSigma);
         data[index]->insert(make_pair(dat[sortDimension], dat));
-    }
-    void erase(const T& dat, const std::pair<int, int>& lower = std::make_pair(3, 1), const std::pair<int, int>& upper = std::make_pair(1, 2)) {
-        const std::pair<int, int> middle = {lower.first * upper.first, lower.second * upper.first + upper.second * lower.first};
-        std::vector<int> idx(dimension);
-        int index = 0, sigma = 1;
-        for(int i = dimension - 1; i >= 0; --i) {
-            if(i == sortDimension) continue;
-            idx[i] = upper_bound(grid[i].begin(), grid[i].end(), dat[i]) - grid[i].begin() - 1;
-            assert(0 <= idx[i] and idx[i] < divideSize[i]);
-            index += idx[i] * sigma;
-            sigma *= divideSize[i];
-        }
-        assert(0 <= index and index < divideSizeSigma);
-        data[index]->erase(make_pair(dat[sortDimension], dat));
-        --num_data;
-        for(int i = 0; i < dimension; ++i) {
-            --count_data[i][idx[i]];
-            if(lower.first * count_data[i][idx[i]] * divideSize_ini[i] <= lower.second * num_data) {
-                if(idx[i] == 0) {
-                    if(middle.first * count_data[i][idx[i] + 1] * divideSize_ini[i] <= middle.second * num_data) {
-                        merge(i, idx[i]);
-                    } else {
-                        flatten(i, idx[i]);
-                    }
-                } else {
-                    if(middle.first * count_data[i][idx[i] - 1] * divideSize_ini[i] <= middle.second * num_data) {
-                        merge(i, idx[i] - 1);
-                    } else {
-                        flatten(i, idx[i] - 1);
-                    }
-                }
-            } else if(upper.first * count_data[i][idx[i]] * divideSize_ini[i] >= upper.second * num_data) {
-                split(i, idx[i]);
-            }
-        }
     }
     void split(const int dim, const int idx) {
         std::vector<T> dat;
@@ -447,7 +418,7 @@ struct FlexFlood {
             insert_only(x);
         }
     }
-    void flatten(const int dim, const int idx) {
+    void equalize(const int dim, const int idx) {
         std::vector<T> dat;
         U left = {}, right = divideSize, cur = {}, plus;
         left[dim] = idx, right[dim] = idx + 2, cur[dim] = idx;
@@ -483,41 +454,5 @@ struct FlexFlood {
         for(const T& x : dat) {
             insert_only(x);
         }
-    }
-    std::tuple<int, int, int> measure_time(const int& num_query, const std::vector<std::vector<T>>& queries) {
-        AnswerType w_p = 0, w_r = 0, w_s = 0;
-        std::chrono::system_clock::time_point start, end;
-        std::chrono::nanoseconds time;
-        std::chrono::_V2::steady_clock::rep msec;
-        int res = 0;
-        for(int q = 0; q < num_query; ++q) {
-            start = std::chrono::system_clock::now();
-            std::vector<int> idx = projection(queries[q][0], queries[q][1]);
-            end = std::chrono::system_clock::now();
-            time = end - start;
-            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
-            w_p += msec;
-            std::vector<std::pair<typename btree::btree_set<std::pair<double, T>>::iterator, typename btree::btree_set<std::pair<double, T>>::iterator>> seg((int)idx.size());
-            start = std::chrono::system_clock::now();
-            for(int i = 0; i < (int)idx.size(); ++i) {
-                seg[i] = refinement(queries[q][0], queries[q][1], idx[i]);
-            }
-            end = std::chrono::system_clock::now();
-            time = end - start;
-            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
-            w_r += msec;
-            start = std::chrono::system_clock::now();
-            for(int i = 0; i < (int)seg.size(); ++i) {
-                for(auto iter = seg[i].first; iter != seg[i].second; ++iter) {
-                    scan_count(queries[q][0], queries[q][1], iter, res);
-                }
-            }
-            end = std::chrono::system_clock::now();
-            time = end - start;
-            msec = std::chrono::duration_cast<std::chrono::microseconds>(time).count();
-            w_s += msec;
-        }
-        std::cout << res << '\n';
-        return std::make_tuple(w_p, w_r, w_s);
     }
 };
