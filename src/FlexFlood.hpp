@@ -17,6 +17,7 @@ struct FlexFlood {
         : data(0), num_data(end - begin), divideSize(partitioning), divideSizeSigma(1), grid(dimension), count_data(dimension) {
         int sort_dimension = -1;
         for(int d = 0; d < dimension; ++d) {
+            assert(partitioning[d] > 0);
             if(partitioning[d] == 1) {
                 sort_dimension = d;
             }

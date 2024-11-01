@@ -32,6 +32,7 @@
 
 - (1) `sample_lowers` と `sample_uppers` の長さは等しい。
 - (2) `partitioning` の値の少なくとも1つは $1$ である。
+- (2) `partitioning` の各値は正である。
 
 ## clear
 
