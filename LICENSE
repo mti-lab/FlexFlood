@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+# Additional Licenses for Third-Party Libraries
+
+This project includes third-party libraries that are licensed under different terms:
+
+1. Google C++ B-Tree
+   - Licensed under the Apache License, Version 2.0.  
+   - For more information, please refer to the original license at https://code.google.com/archive/p/cpp-btree/.
+
+2. scikit-learn
+   - Licensed under the BSD 3-Clause License.  
+   - For more information, please refer to the original license at https://github.com/scikit-learn/scikit-learn/blob/main/COPYING.
