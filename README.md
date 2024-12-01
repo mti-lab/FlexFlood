@@ -1,4 +1,4 @@
-# FlexFlood
+# [FlexFlood](https://arxiv.org/abs/2411.09205)
 
 [日本語版README](https://github.com/mti-lab/FlexFlood/blob/main/README_jp.md)
 
